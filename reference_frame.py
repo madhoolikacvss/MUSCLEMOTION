@@ -1,0 +1,197 @@
+"""
+reference_frame.py — Step 1 of the pipeline: choose the single frame that
+every other frame will be diffed against for the Contraction signal.
+
+Three modes (mirrors UserManual section 6, option G):
+
+    "manual"       — caller supplies an explicit frame index.
+    "first_frame"  — trivial fallback, frame 0.
+    "autodetect"   — find a frame that is both QUIET (low overall motion)
+                     and STABLE (motion isn't actively changing, i.e. not
+                     mid-transition into/out of a beat). This is the
+                     "hunt for a diastolic frame" heuristic described in
+                     the algorithm walkthrough.
+
+Design note on a known macro quirk
+-----------------------------------
+In the original ImageJ macro, `autoDetectStart`/`autoDetectStop` are used
+to slice the *already-computed* motion-scan array, but the scan itself
+always starts at frame 1 regardless of `autoDetectStart`. The winning
+index found in that sliced sub-array is then used directly as a 1-based
+frame number, WITHOUT adding `autoDetectStart` back as an offset. With
+the default `autoDetectStart = 1` this is harmless, but for any other
+value it silently searches the wrong part of the video.
+
+This module fixes that by default (`legacy_offset_bug=False`): the scan
+window is honored as written (starts at `auto_detect_start`), and the
+returned index is correctly offset back into full-stack coordinates.
+Pass `legacy_offset_bug=True` if you need byte-for-byte parity with the
+original macro's output for validation against the demo dataset.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .config import MuscleMotionConfig
+from .utils import maybe_blur, mean_abs_diff
+
+
+@dataclass
+class ReferenceFrameResult:
+    index: int                 # 0-based index into the ORIGINAL stack
+    frame: np.ndarray          # the (optionally blurred) reference frame itself
+    mode: str                  # which mode produced this result, for logging/QC
+    diagnostics: dict          # intermediate arrays, useful for debugging false positives later
+
+
+def _clamp_autodetect_params(n_frames: int, cfg: MuscleMotionConfig) -> tuple[int, int, int, int]:
+    """
+    Reproduce the macro's bounds-checking exactly (see macro comments:
+    'WARNING: autoDetectStart set to ... since it should be smaller than
+    autoDetectStop', etc.), operating on 0-based indices internally.
+    """
+    start = cfg.auto_detect_start - 1          # convert to 0-based
+    stop = cfg.auto_detect_stop - 1
+    low_n = cfg.low_value_n
+    unity_n = cfg.unity_selection_n
+
+    max_valid_stop = n_frames - cfg.speed_window - 1
+    if stop >= max_valid_stop:
+        stop = max_valid_stop
+    if stop <= start:
+        start = stop - 1
+    if low_n >= stop:
+        low_n = stop - 1
+    if low_n <= unity_n:
+        unity_n = low_n - 1
+
+    return start, stop, low_n, unity_n
+
+
+def autodetect_reference_frame(
+    stack: np.ndarray,
+    cfg: MuscleMotionConfig,
+    legacy_offset_bug: bool = False,
+) -> ReferenceFrameResult:
+    """
+    Implements the "quiet + stable" heuristic:
+
+      1. Coarse motion scan: speedY[k] = mean(|stack[k] - stack[k+speed_window]|)
+      2. Pair each value with its immediate next neighbor.
+      3. Score by overall motion magnitude (radian = sqrt(a^2 + b^2)); keep the
+         `low_value_n` quietest candidates.
+      4. Among those, score by how close the ratio a/b is to 1 ("unity line");
+         keep the `unity_selection_n` flattest candidates.
+      5. Pick the candidate minimizing (a * b * unity_score) — quiet AND flat wins.
+    """
+    n_frames = stack.shape[0]
+    sw = cfg.speed_window
+
+    # --- Step 1: coarse motion scan across the (blurred, if enabled) whole stack ---
+    a_full = maybe_blur(stack[: n_frames - sw], cfg.gaussian_blur)
+    b_full = maybe_blur(stack[sw:], cfg.gaussian_blur)
+    speed_y_full = np.abs(a_full - b_full).mean(axis=(1, 2))  # length n_frames - sw
+
+    start, stop, low_n, unity_n = _clamp_autodetect_params(n_frames, cfg)
+
+    if legacy_offset_bug:
+        # Faithful reproduction: slice the array but forget to re-offset the winning index.
+        window = speed_y_full[start:stop]
+        offset_correction = 0
+    else:
+        # Corrected: the search window genuinely starts at `start`, and we track that.
+        window = speed_y_full[start:stop]
+        offset_correction = start
+
+    # --- Step 2: pair each value with its immediate next neighbor ---
+    speed_y = window[:-1]
+    speed_y_shift = window[1:]
+
+    if len(speed_y) < max(low_n, unity_n, 2):
+        raise ValueError(
+            "Not enough frames in the autodetect search window for the requested "
+            "low_value_n / unity_selection_n — check auto_detect_start/stop and speed_window."
+        )
+
+    # --- Step 3: quiet filter (smallest overall motion magnitude) ---
+    radian = np.sqrt(speed_y**2 + speed_y_shift**2)
+    quiet_candidates = np.argsort(radian)[:low_n]
+
+    # --- Step 4: flatness filter (ratio closest to 1, i.e. near the "unity line") ---
+    with np.errstate(divide="ignore", invalid="ignore"):
+        unity_score = np.abs(speed_y[quiet_candidates] / speed_y_shift[quiet_candidates] - 1)
+    unity_score = np.nan_to_num(unity_score, nan=np.inf, posinf=np.inf)
+    flattest_order = np.argsort(unity_score)[:unity_n]
+    flattest_candidates = quiet_candidates[flattest_order]
+    flattest_unity_scores = unity_score[flattest_order]
+
+    # --- Step 5: final combined score — quiet AND flat wins ---
+    combined_score = (
+        speed_y[flattest_candidates] * speed_y_shift[flattest_candidates] * flattest_unity_scores
+    )
+    best_local = np.argmin(combined_score)
+    best_index_in_window = flattest_candidates[best_local]
+
+    ref_idx = int(best_index_in_window + offset_correction)
+    ref_idx = max(0, min(ref_idx, n_frames - 1))  # safety clamp
+
+    ref_frame = maybe_blur(stack[ref_idx], cfg.gaussian_blur)
+
+    return ReferenceFrameResult(
+        index=ref_idx,
+        frame=ref_frame,
+        mode="autodetect",
+        diagnostics={
+            "speed_y_full": speed_y_full,
+            "search_start": start,
+            "search_stop": stop,
+            "low_value_n_used": low_n,
+            "unity_selection_n_used": unity_n,
+            "quiet_candidates": quiet_candidates,
+            "flattest_candidates": flattest_candidates,
+            "combined_score": combined_score,
+            "legacy_offset_bug": legacy_offset_bug,
+        },
+    )
+
+
+def manual_reference_frame(stack: np.ndarray, cfg: MuscleMotionConfig) -> ReferenceFrameResult:
+    """User-specified reference frame index (0-based)."""
+    idx = cfg.manual_reference_frame_index
+    if idx is None or not (0 <= idx < stack.shape[0]):
+        raise ValueError(f"manual_reference_frame_index out of range: {idx}")
+    frame = maybe_blur(stack[idx], cfg.gaussian_blur)
+    return ReferenceFrameResult(index=idx, frame=frame, mode="manual", diagnostics={})
+
+
+def first_frame_reference(stack: np.ndarray, cfg: MuscleMotionConfig) -> ReferenceFrameResult:
+    """Trivial fallback: just use frame 0, matching the macro's final 'else' branch."""
+    frame = maybe_blur(stack[0], cfg.gaussian_blur)
+    return ReferenceFrameResult(index=0, frame=frame, mode="first_frame", diagnostics={})
+
+
+def select_reference_frame(
+    stack: np.ndarray,
+    cfg: MuscleMotionConfig,
+    legacy_offset_bug: bool = False,
+) -> ReferenceFrameResult:
+    """Single entry point the pipeline orchestrator should call for Step 1."""
+    if cfg.reference_frame_mode == "manual":
+        return manual_reference_frame(stack, cfg)
+    if cfg.reference_frame_mode == "first_frame":
+        return first_frame_reference(stack, cfg)
+    if cfg.reference_frame_mode == "autodetect":
+        return autodetect_reference_frame(stack, cfg, legacy_offset_bug=legacy_offset_bug)
+    raise ValueError(f"Unknown reference_frame_mode: {cfg.reference_frame_mode}")
+
+
+def remove_reference_frame(stack: np.ndarray, ref_result: ReferenceFrameResult) -> np.ndarray:
+    """
+    Delete the chosen reference frame from the working stack, matching the
+    macro's behavior of never diffing the reference frame against itself
+    in downstream stages.
+    """
+    return np.delete(stack, ref_result.index, axis=0)
