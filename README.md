@@ -251,3 +251,7 @@ use to validate this port against MUSCLEMOTION's own `demo_stack.tif`/
   across process boundaries, which is only efficient when `inputs`
   contains file paths (loaded independently in each worker) rather than
   already-loaded large in-memory arrays.
+
+
+# BUG report 
+1. In the macro, they only populate unitySelection for N-1 elements so the last element is always 0 - unityscore therefore is 0 wve when SpeedY != speedYSift
