@@ -39,7 +39,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from config import MuscleMotionConfig
-from utils import maybe_blur
+from utils import maybe_blur, blur_stack
 
 
 @dataclass
@@ -49,10 +49,10 @@ class SignalResult:
     time_contraction_ms: np.ndarray  # shape matches contraction
     time_speed_ms: np.ndarray         # shape matches speed
 
+
 def _apply_mask_macro_style(diff: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
     # Convert to float32    
     diff = diff.astype(np.float32)
-    # diff *= 255.0
     if mask is None:
         return diff.mean(axis=(1, 2))
     
@@ -72,50 +72,61 @@ def _apply_mask_restricted(diff: np.ndarray, mask: np.ndarray | None) -> np.ndar
     return flat[:, mask_flat].mean(axis=1)
 
 
-def compute_contraction_signal(
-    stack_no_ref: np.ndarray,
+def compute_contraction_signal_from_blurred(
+    blurred_stack: np.ndarray,
     reference_frame: np.ndarray,
     mask: np.ndarray | None,
-    cfg: MuscleMotionConfig,
     restrict_mean_to_mask: bool = False,
 ) -> np.ndarray:
     """
-    Contraction signal: mean(|frame_i - reference_frame|)
+    Contraction signal using pre-blurred stack.
+    
+    Parameters:
+    -----------
+    blurred_stack : (n_frames, H, W) array - already blurred
+    reference_frame : (H, W) array - already blurred
+    mask : (H, W) array or None
+    restrict_mean_to_mask : bool
     """
-    blurred_stack = maybe_blur(stack_no_ref, cfg.gaussian_blur)
     ref = reference_frame.astype(np.float32)
-
+    
+    # Vectorized diff (all frames at once)
     diff = np.abs(blurred_stack - ref[np.newaxis, :, :])
+    
     if restrict_mean_to_mask:
         return _apply_mask_restricted(diff, mask)
     return _apply_mask_macro_style(diff, mask)
 
 
-def compute_speed_signal(
-    stack_no_ref: np.ndarray,
+def compute_speed_signal_from_blurred(
+    blurred_stack: np.ndarray,
     mask: np.ndarray | None,
     cfg: MuscleMotionConfig,
     restrict_mean_to_mask: bool = False,
 ) -> np.ndarray:
     """
-    Speed-of-contraction signal: mean(|frame_i - frame_{i+speed_window}|),
-    a sliding/rolling comparison rather than a fixed reference frame.
-    Length is n_frames - speed_window (you lose `speed_window` samples off
-    the end, same as the macro).
+    Speed-of-contraction signal using pre-blurred stack.
+    
+    Parameters:
+    -----------
+    blurred_stack : (n_frames, H, W) array - already blurred
+    mask : (H, W) array or None
+    cfg : MuscleMotionConfig
+    restrict_mean_to_mask : bool
     """
     sw = cfg.speed_window
-    n_frames = stack_no_ref.shape[0]
+    n_frames = blurred_stack.shape[0]
+    
     if sw >= n_frames:
         raise ValueError(
             f"speed_window ({sw}) must be smaller than the number of frames ({n_frames})"
         )
-
-    blurred_stack = maybe_blur(stack_no_ref, cfg.gaussian_blur)
-    a = blurred_stack[: n_frames - sw]
+    
+    a = blurred_stack[:n_frames - sw]
     b = blurred_stack[sw:]
-
+    
     diff = np.abs(a - b)
-
+    
     if restrict_mean_to_mask:
         return _apply_mask_restricted(diff, mask)
     return _apply_mask_macro_style(diff, mask)
@@ -136,11 +147,31 @@ def compute_signals(
     cfg: MuscleMotionConfig,
     restrict_mean_to_mask: bool = False,
 ) -> SignalResult:
-    """Single entry point the pipeline orchestrator should call for Step 3."""
-    contraction = compute_contraction_signal(
-        stack_no_ref, reference_frame, mask, cfg, restrict_mean_to_mask
+    """
+    Single entry point the pipeline orchestrator should call for Step 3.
+    
+    OPTIMIZATION: Blur the entire stack ONCE, then use it for both signals.
+    Previously: stack was blurred twice (once for contraction, once for speed).
+    """
+    # OPTIMIZATION: Blur the ENTIRE stack ONCE
+    if cfg.gaussian_blur:
+        from scipy.ndimage import gaussian_filter
+        blurred_stack = gaussian_filter(stack_no_ref.astype(np.float32), sigma=(0, 10.0, 10.0))
+    else:
+        blurred_stack = stack_no_ref.astype(np.float32)
+    
+    # Reference frame should already be blurred (from reference_frame.py)
+    ref_blurred = reference_frame.astype(np.float32)
+    
+    # Compute both signals from the single blurred stack
+    contraction = compute_contraction_signal_from_blurred(
+        blurred_stack, ref_blurred, mask, restrict_mean_to_mask
     )
-    speed = compute_speed_signal(stack_no_ref, mask, cfg, restrict_mean_to_mask)
+    speed = compute_speed_signal_from_blurred(
+        blurred_stack, mask, cfg, restrict_mean_to_mask
+    )
+    
+    # Scale to match macro's 8-bit range (0-255)
     contraction *= 255.0
     speed *= 255.0
 

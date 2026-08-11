@@ -77,9 +77,20 @@ def autodetect_reference_frame(
     n_frames = stack.shape[0]
     sw = cfg.speed_window
 
-    #  Step 1: coarse motion scan across the (blurred, if enabled) whole stack 
-    a_full = maybe_blur(stack[: n_frames - sw], cfg.gaussian_blur)
-    b_full = maybe_blur(stack[sw:], cfg.gaussian_blur)
+    # OPTIMIZATION: Blur the ENTIRE stack ONCE, then slice it
+    # Previously: blurred stack A and B separately (2x blurring)
+    if cfg.gaussian_blur:
+        from scipy.ndimage import gaussian_filter
+        # Blur the entire stack once (vectorized across all frames)
+        blurred_full = gaussian_filter(stack.astype(np.float32), sigma=(0, 10.0, 10.0))
+    else:
+        blurred_full = stack.astype(np.float32)
+    
+    # Slice the already-blurred stack
+    a_full = blurred_full[:n_frames - sw]
+    b_full = blurred_full[sw:]
+    
+    # Vectorized speed computation (mean across height and width)
     speed_y_full = np.abs(a_full - b_full).mean(axis=(1, 2))  # length n_frames - sw
 
     start, stop, low_n, unity_n = _clamp_autodetect_params(n_frames, cfg)
@@ -91,7 +102,7 @@ def autodetect_reference_frame(
         window = speed_y_full[start + 1:stop + 1]
         offset_correction = start + 1
 
-    #  Step 2: pair each value with its immediate next neighbor 
+    # Step 2: pair each value with its immediate next neighbor 
     speed_y = window[:-1]
     speed_y_shift = window[1:]
 
@@ -101,11 +112,11 @@ def autodetect_reference_frame(
             "low_value_n / unity_selection_n: check auto_detect_start/stop and speed_window."
         )
 
-    #  Step 3: quiet filter (smallest overall motion magnitude) 
+    # Step 3: quiet filter (smallest overall motion magnitude) 
     radian = np.sqrt(speed_y**2 + speed_y_shift**2)
     quiet_candidates = np.argsort(radian)[:low_n]
 
-    #  Step 4: flatness filter (ratio closest to 1, i.e. near the "unity line") 
+    # Step 4: flatness filter (ratio closest to 1, i.e. near the "unity line") 
     # Calculate unity scores for ALL quiet candidates (no bug)
     with np.errstate(divide="ignore", invalid="ignore"):
         unity_scores = np.abs(speed_y[quiet_candidates] / speed_y_shift[quiet_candidates] - 1)
@@ -116,7 +127,7 @@ def autodetect_reference_frame(
     flattest_candidates = quiet_candidates[unity_order]
     flattest_unity_scores = unity_scores[unity_order]
 
-    #  Step 5: final combined score, quiet AND flat wins 
+    # Step 5: final combined score, quiet AND flat wins 
     combined_score = (
         speed_y[flattest_candidates] * speed_y_shift[flattest_candidates] * flattest_unity_scores
     )
@@ -126,6 +137,7 @@ def autodetect_reference_frame(
     ref_idx = int(best_index_in_window + offset_correction)
     ref_idx = max(0, min(ref_idx, n_frames - 1))  # safety clamp
 
+    # Extract and blur the reference frame (only ONE frame, not the whole stack)
     ref_frame = maybe_blur(stack[ref_idx], cfg.gaussian_blur)
 
     return ReferenceFrameResult(
@@ -179,9 +191,6 @@ def select_reference_frame(
 
 
 def remove_reference_frame(stack: np.ndarray, ref_result: ReferenceFrameResult) -> np.ndarray:
-    """
-    Delete the chosen reference frame from the working stack, matching the
-    macro's behavior of never diffing the reference frame against itself
-    in downstream stages.
-    """
-    return np.delete(stack, ref_result.index, axis=0)
+    """Fast removal using slicing (avoid np.delete which copies the array)."""
+    idx = ref_result.index
+    return np.concatenate([stack[:idx], stack[idx+1:]], axis=0)

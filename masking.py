@@ -55,38 +55,84 @@ def _resolve_frame_range(n_frames: int, cfg: MuscleMotionConfig) -> tuple[int, i
     return start, end
 
 
+# def compute_snr_mask(
+#     stack_no_ref: np.ndarray,
+#     reference_frame: np.ndarray,
+#     cfg: MuscleMotionConfig,
+# ) -> SNRMaskResult:
+#     """
+#     Build the binary ROI mask from the (reference-frame-removed) stack.
+
+#     Parameters:
+#     stack_no_ref : (n_frames, H, W) array, the working stack, reference
+#         frame already excluded (see reference_frame.remove_reference_frame).
+#     reference_frame : (H, W) array, the chosen reference frame (already
+#         blurred if cfg.gaussian_blur was on when it was selected).
+#     cfg : MuscleMotionConfig
+#     """
+#     n_frames = stack_no_ref.shape[0]
+#     start, end = _resolve_frame_range(n_frames, cfg)
+
+#     ref = reference_frame.astype(np.float32)
+#     running_max = np.zeros(ref.shape, dtype=np.float32)
+
+#     for i in range(start, end):
+#         frame = maybe_blur(stack_no_ref[i], cfg.gaussian_blur)
+#         diff = np.abs(frame - ref)
+#         np.maximum(running_max, diff, out=running_max)
+
+#     mean_val = float(running_max.mean())
+#     std_val = float(running_max.std())
+#     threshold = mean_val + std_val
+
+#     mask = running_max >= threshold
+
+#     return SNRMaskResult(
+#         mask=mask,
+#         running_max=running_max,
+#         threshold=threshold,
+#         mean_val=mean_val,
+#         std_val=std_val,
+#         frame_range_used=(start, end),
+#     )
+
+
+# vactorized version
 def compute_snr_mask(
     stack_no_ref: np.ndarray,
     reference_frame: np.ndarray,
     cfg: MuscleMotionConfig,
+    chunk_size: int = 50,  # Process in chunks to manage memory
 ) -> SNRMaskResult:
     """
-    Build the binary ROI mask from the (reference-frame-removed) stack.
-
-    Parameters:
-    stack_no_ref : (n_frames, H, W) array, the working stack, reference
-        frame already excluded (see reference_frame.remove_reference_frame).
-    reference_frame : (H, W) array, the chosen reference frame (already
-        blurred if cfg.gaussian_blur was on when it was selected).
-    cfg : MuscleMotionConfig
+    Vectorized version of compute_snr_mask - much faster!
     """
     n_frames = stack_no_ref.shape[0]
     start, end = _resolve_frame_range(n_frames, cfg)
-
+    
     ref = reference_frame.astype(np.float32)
     running_max = np.zeros(ref.shape, dtype=np.float32)
-
-    for i in range(start, end):
-        frame = maybe_blur(stack_no_ref[i], cfg.gaussian_blur)
-        diff = np.abs(frame - ref)
-        np.maximum(running_max, diff, out=running_max)
-
+    
+    # Process frames in chunks to balance speed and memory
+    for chunk_start in range(start, end, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, end)
+        chunk = stack_no_ref[chunk_start:chunk_end].astype(np.float32)
+        
+        # Apply blur to entire chunk at once (vectorized)
+        if cfg.gaussian_blur:
+            from scipy.ndimage import gaussian_filter
+            chunk = gaussian_filter(chunk, sigma=(0, 10.0, 10.0))
+        
+        # Vectorized diff and max
+        diffs = np.abs(chunk - ref[np.newaxis, :, :])
+        chunk_max = np.max(diffs, axis=0)
+        running_max = np.maximum(running_max, chunk_max)
+    
     mean_val = float(running_max.mean())
     std_val = float(running_max.std())
     threshold = mean_val + std_val
-
     mask = running_max >= threshold
-
+    
     return SNRMaskResult(
         mask=mask,
         running_max=running_max,

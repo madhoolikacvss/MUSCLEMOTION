@@ -85,6 +85,8 @@ class WellResult:
     elapsed_seconds: float
     input_path: str = ""
     batch_mode: bool = False
+    # Timing breakdown
+    timing: Optional[dict] = None
 
 
 def speed_linearity_qc(signals: SignalResult) -> Optional[float]:
@@ -215,6 +217,12 @@ def _write_log_file(result: WellResult, output_dir: str) -> str:
         
         # Elapsed time
         f.write(f"Elapsed time (s): {result.elapsed_seconds:.2f}\n")
+        
+        # Timing breakdown
+        if result.timing:
+            f.write("\n--- Timing Breakdown ---\n")
+            for stage, duration in result.timing.items():
+                f.write(f"{stage}: {duration:.2f}s\n")
     
     return log_path 
 
@@ -229,13 +237,19 @@ def run_pipeline(
     """
     Run every stage for ONE well/recording and return a WellResult.
     """
-    start = time.time()
+    total_start = time.time()
+    timing = {}
     legacy = legacy or LegacyFlags()
     warnings: List[str] = []
 
+    # ========================================================================
+    # Stage 1: Load Stack
+    # ========================================================================
+    stage_start = time.time()
     input_path = stack_or_path if isinstance(stack_or_path, str) else ""
     stack = load_stack(stack_or_path) if isinstance(stack_or_path, str) else np.asarray(stack_or_path)
     n_frames, height, width = stack.shape
+    timing["load_stack"] = time.time() - stage_start
 
     if cfg.recorded_framerate < 50:
         warnings.append(
@@ -243,33 +257,64 @@ def run_pipeline(
             "the UserManual recommends at least 60-75 fps for reliable results."
         )
 
+    # ========================================================================
+    # Stage 2: Reference Frame Selection
+    # ========================================================================
+    stage_start = time.time()
     ref_result = select_reference_frame(stack, cfg, legacy_offset_bug=legacy.reference_frame_offset_bug)
-    working_stack = remove_reference_frame(stack, ref_result)
+    timing["reference_frame"] = time.time() - stage_start
 
+    # ========================================================================
+    # Stage 3: Remove Reference Frame
+    # ========================================================================
+    stage_start = time.time()
+    working_stack = remove_reference_frame(stack, ref_result)
+    timing["remove_reference"] = time.time() - stage_start
+
+    # ========================================================================
+    # Stage 4: Masking (SNR Improvement)
+    # ========================================================================
+    stage_start = time.time()
     mask_result: Optional[SNRMaskResult] = None
     mask = None
     if cfg.max_project:
         mask_result = compute_snr_mask(working_stack, ref_result.frame, cfg)
         mask = mask_result.mask
+    timing["masking"] = time.time() - stage_start
 
+    # ========================================================================
+    # Stage 5: Signals (Contraction + Speed)
+    # ========================================================================
+    stage_start = time.time()
     sig = compute_signals(
         working_stack, ref_result.frame, mask, cfg,
         restrict_mean_to_mask=legacy.restrict_mean_to_mask,
     )
+    timing["signals"] = time.time() - stage_start
 
+    # ========================================================================
+    # Stage 6: Speed Linearity QC
+    # ========================================================================
+    stage_start = time.time()
     correlation = speed_linearity_qc(sig)
     if correlation is not None and correlation < 0.5:
         warnings.append(
             f"Speed-linearity QC correlation is low ({correlation:.2f}), calculated and "
             "measured speed disagree; consider Gaussian blur, speed_window, or frame rate."
         )
+    timing["speed_linearity"] = time.time() - stage_start
 
+    # ========================================================================
+    # Stage 7: Peak Detection, Baseline, Transients
+    # ========================================================================
     peak_result: Optional[PeakDetectionResult] = None
     baseline_result: Optional[BaselineResult] = None
     transient_result: Optional[TransientAnalysisResult] = None
     beat_records: Optional[List[dict]] = None
 
     if cfg.automatic_transient_detection:
+        # Peak Detection
+        stage_start = time.time()
         peak_kwargs = {"legacy_index_bug": legacy.peak_index_bug}
         if legacy.peak_detection_method == "legacy":
             peak_kwargs["legacy_padding_bug"] = legacy.peak_padding_bug
@@ -279,6 +324,10 @@ def run_pipeline(
             method=legacy.peak_detection_method,
             **peak_kwargs,
         )
+        timing["peak_detection"] = time.time() - stage_start
+
+        # Baseline Computation
+        stage_start = time.time()
         baseline_result = compute_baselines(
             sig.contraction, peak_result.peaks, cfg,
             legacy_first_peak_bug=legacy.baseline_first_peak_bug,
@@ -286,12 +335,16 @@ def run_pipeline(
             legacy_zero_baseline_bug=legacy.baseline_zero_bug,
         )
         warnings.extend(baseline_result.warnings)
+        timing["baseline"] = time.time() - stage_start
 
+        # Transient Analysis
+        stage_start = time.time()
         transient_result = analyze_transients(
             sig.contraction, peak_result.peaks, baseline_result.baselines, cfg,
             legacy_stale_percentage_crossing_bug=legacy.stale_percentage_crossing_bug,
         )
         beat_records = beats_to_records(transient_result, cfg)
+        timing["transients"] = time.time() - stage_start
 
     return WellResult(
         well_name=well_name,
@@ -308,10 +361,12 @@ def run_pipeline(
         beat_records=beat_records,
         speed_linearity_correlation=correlation,
         warnings=warnings,
-        elapsed_seconds=time.time() - start,
+        elapsed_seconds=time.time() - total_start,
         input_path=input_path,
         batch_mode=batch_mode,
+        timing=timing,
     )
+
 
 def _save_mask_image(result: WellResult, output_dir: str) -> Optional[str]:
     """
@@ -335,6 +390,7 @@ def _save_mask_image(result: WellResult, output_dir: str) -> Optional[str]:
     plt.close(fig)
     
     return path
+
 
 def _generate_plots(result: WellResult, output_dir: str) -> dict:
     """
