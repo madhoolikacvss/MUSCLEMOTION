@@ -10,26 +10,6 @@ documented and reproducible on demand, before any deliberate algorithmic
 improvements are layered on top. Each pipeline stage lives in its own
 file so it can be modified in isolation without affecting the others.
 
-```
-musclemotion/
-├── config.py           Step 0 — all tunable parameters
-├── utils.py             Shared low-level helpers
-├── io_utils.py            Loading video/stack files
-├── reference_frame.py       Step 1 — reference frame selection
-├── masking.py               Step 2 — SNR / ROI mask
-├── signals.py               Step 3 — Contraction + Speed signals
-├── peaks.py                 Step 4 — peak detection
-├── baseline.py              Step 5 — per-peak baseline
-├── transients.py            Step 6 — per-beat metrics
-├── pipeline.py              Orchestrator
-└── tests/                   One test file per module
-```
-
-Run any module's tests with:
-```
-python3 -m musclemotion.tests.test_<module_name>
-```
-
 ---
 
 ## config.py
@@ -65,9 +45,6 @@ float32 grayscale numpy array.
   original UserManual requires for reliable results , it will load a
   compressed AVI without warning, even though compression artifacts can
   distort the resulting signal.
-- No batch-directory traversal (recursively finding files in
-  subdirectories) yet. Here it's left to the caller (e.g. when building the list of `(well_name, path)`
-  tuples passed to `pipeline.run_batch`).
 
 ---
 
@@ -78,15 +55,6 @@ against for the Contraction signal. Three modes: `autodetect` (the
 "quiet + stable" heuristic , finds a frame with low overall motion whose
 motion is also not actively changing, i.e. not mid-beat), `manual`
 (caller-supplied index), and `first_frame` (trivial fallback).
-
-**TODOs / known limitations:**
-- `legacy_offset_bug` flag (default `False` = corrected): the original
-  macro slices its motion-scan array using `auto_detect_start` but then
-  uses the resulting index directly against the *original* stack's frame
-  numbering, without re-adding that offset back. Harmless with the
-  default `auto_detect_start=1`, but produces a wrong reference frame for
-  any other value. Reproducible via `legacy_offset_bug=True` for
-  validation against MUSCLEMOTION's own output.
 
 ---
 
@@ -242,16 +210,7 @@ use to validate this port against MUSCLEMOTION's own `demo_stack.tif`/
 `demo_results`.
 
 **TODOs / known limitations:**
-- This package has not yet been validated against MUSCLEMOTION's actual
-  `demo_stack.tif`/`demo_results` reference output , all current tests
-  use synthetic data with hand-computable or hand-constructed expected
-  values. Running `LegacyFlags.all_legacy()` against the real demo
-  dataset and comparing output files is the natural next validation step.
 - `run_batch`'s `n_jobs > 1` parallel path pickles each well's stack
   across process boundaries, which is only efficient when `inputs`
   contains file paths (loaded independently in each worker) rather than
   already-loaded large in-memory arrays.
-
-
-# BUG report 
-1. In the macro, they only populate unitySelection for N-1 elements so the last element is always 0 - unityscore therefore is 0 wve when SpeedY != speedYSift
