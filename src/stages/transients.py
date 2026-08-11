@@ -49,8 +49,12 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
+from pathlib import Path
+import sys
 
-from config import MuscleMotionConfig
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from utils.config import MuscleMotionConfig
 
 
 def _real_peaks(peaks: List[Optional[int]]) -> List[int]:

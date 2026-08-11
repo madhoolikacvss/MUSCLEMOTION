@@ -40,8 +40,13 @@ from typing import List, Optional
 import numpy as np
 from scipy.signal import find_peaks
 
-from config import MuscleMotionConfig
-from utils import robust_baseline_value
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from utils.config import MuscleMotionConfig
+from utils.utils import robust_baseline_value
 
 
 @dataclass

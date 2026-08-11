@@ -46,9 +46,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
+from pathlib import Path
+import sys
 
-from config import MuscleMotionConfig
-from peaks import local_spacing
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from utils.config import MuscleMotionConfig
+from stages.peaks import local_spacing
 
 
 def _real_peaks(peaks: List[Optional[int]]) -> List[int]:

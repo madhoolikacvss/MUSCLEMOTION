@@ -38,8 +38,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from config import MuscleMotionConfig
-from utils import maybe_blur, blur_stack
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from utils.config import MuscleMotionConfig
+from utils.utils import maybe_blur, blur_stack
 
 
 @dataclass

@@ -27,9 +27,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
+from pathlib import Path
+import sys
 
-from config import MuscleMotionConfig
-from utils import maybe_blur
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from utils.config import MuscleMotionConfig
+from utils.utils import maybe_blur
 
 
 @dataclass

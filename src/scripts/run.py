@@ -21,8 +21,13 @@ from typing import List
 import matplotlib.pyplot as plt
 import numpy as np
 
-from config import MuscleMotionConfig
-from pipeline import run_pipeline, LegacyFlags, save_well_outputs
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from utils.config import MuscleMotionConfig
+from scripts.pipeline import run_pipeline, LegacyFlags, save_well_outputs
 
 
 def process_single_video(video_path: str, cfg: MuscleMotionConfig, base_output_dir: str, 

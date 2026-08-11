@@ -23,14 +23,19 @@ from typing import List, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
-from config import MuscleMotionConfig
-from io_utils import load_stack
-from reference_frame import select_reference_frame, remove_reference_frame, ReferenceFrameResult
-from masking import compute_snr_mask, SNRMaskResult
-from signals import compute_signals, SignalResult
-from peaks import detect_peaks, PeakDetectionResult
-from baseline import compute_baselines, BaselineResult
-from transients import analyze_transients, beats_to_records, TransientAnalysisResult
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from utils.config import MuscleMotionConfig
+from utils.io_utils import load_stack
+from stages.reference_frame import select_reference_frame, remove_reference_frame, ReferenceFrameResult
+from stages.masking import compute_snr_mask, SNRMaskResult
+from stages.signals import compute_signals, SignalResult
+from stages.peaks import detect_peaks, PeakDetectionResult
+from stages.baseline import compute_baselines, BaselineResult
+from stages.transients import analyze_transients, beats_to_records, TransientAnalysisResult
 
 
 @dataclass
