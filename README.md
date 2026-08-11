@@ -1,4 +1,4 @@
-# MUSCLEMOTION (Python port) — README
+# MUSCLEMOTION (Python port)
 
 A modular Python reimplementation of the MUSCLEMOTION ImageJ macro
 (van Meer & Sala, *Circulation Research*, 2017) for quantifying muscle/
