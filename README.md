@@ -10,6 +10,26 @@ documented and reproducible on demand, before any deliberate algorithmic
 improvements are layered on top. Each pipeline stage lives in its own
 file so it can be modified in isolation without affecting the others.
 
+
+```
+musclemotion/
+└── src/
+    ├── scripts/
+    │   ├── pipeline.py
+    │   └── run.py
+    ├── stages/
+    │   ├── baseline.py
+    │   ├── masking.py
+    │   ├── peaks.py
+    │   ├── reference_frame.py
+    │   ├── signals.py
+    │   └── transients.py
+    └── utils/
+        ├── config.py
+        ├── io_utils.py
+        └── utils.py
+```
+
 ---
 
 ## config.py
