@@ -1,16 +1,14 @@
 """
-config.py — every tunable MUSCLEMOTION parameter in one place.
+config.py: every tunable MUSCLEMOTION parameter in one place.
 
 This mirrors the wizard dialog options in the original ImageJ macro (see
 UserManual sections 6 A-H) plus a couple of Python-specific additions
 (e.g. an explicit manual reference frame index instead of an interactive
-slider). Nothing in here does any computation — it's purely a typed,
-documented settings object that every other module reads from.
+slider).
 """
 
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional
-
 
 ReferenceFrameMode = Literal["autodetect", "manual", "first_frame"]
 
@@ -19,7 +17,7 @@ ReferenceFrameMode = Literal["autodetect", "manual", "first_frame"]
 class MuscleMotionConfig:
     # ---- acquisition ----
     recorded_framerate: float = 26.0          # frames per second
-    # ms per frame, derived — do not set directly
+    # ms per frame, derived, do not set directly
     sampling_time_ms: float = field(init=False)
 
     # ---- speed / general ----
@@ -41,9 +39,9 @@ class MuscleMotionConfig:
 
     # ---- transient / peak analysis ("H. Transient Analysis") ----
     automatic_transient_detection: bool = True
-    peak_detection_window: int = 20           # frames, ~0.75 * frames-per-beat-period
+    peak_detection_window: int = 20           # frames, aaprox 0.75 * frames-per-beat-period
     peak_threshold_pct: float = 30.0          # % of (max - perc0) required to count as a peak
-    percentages: List[int] = field(default_factory=lambda: [10, 20, 30, 50, 90])
+    percentages: List[int] = field(default_factory=lambda: [90, 50, 10])
     baseline_threshold_pct: float = 2.0       # % noise band (standard baseline mode only)
     baseline_number_of_points: int = 5        # frames averaged for the standard-mode baseline
     high_freq_baseline_detection: bool = True # True -> min-value-before-peak baseline mode
@@ -60,7 +58,7 @@ class MuscleMotionConfig:
 
         if self.percentages != sorted(self.percentages):
             raise ValueError(
-                "percentages should be listed in ascending order — the FIRST entry is used "
+                "percentages should be listed in ascending order,  the FIRST entry is used "
                 "to define time-to-peak / relaxation-time / transient-duration, matching the "
                 "original macro's behavior (see transients.py docstring)."
             )

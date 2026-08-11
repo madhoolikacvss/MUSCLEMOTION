@@ -1,10 +1,10 @@
 """
-masking.py — Step 2 of the pipeline: build a binary "pixels of interest" mask
+masking.py Step 2 of the pipeline: build a binary "pixels of interest" mask
 so that later stages (Step 3 onward) can restrict their mean-intensity
 calculations to pixels that actually move, instead of averaging over the
 whole frame (background included).
 
-This is a faithful literal port of the macro's `pixelsOfInterest()`:
+This is a literal port of the macro's `pixelsOfInterest()`:
 
     1. For every frame in [mp_start_range, mp_end_range), compute
        diff = |frame - reference_frame| (optionally Gaussian-blurred first).
@@ -14,18 +14,11 @@ This is a faithful literal port of the macro's `pixelsOfInterest()`:
     3. Threshold that running-max image at (mean + 1 standard deviation).
        Anything above the threshold becomes a "pixel of interest" (mask=True).
 
-Known limitation (intentionally NOT fixed here)
-------------------------------------------------
+NB (intentionally NOT fixed here):
+
 `mean + 1*std` is a blunt heuristic: by construction it will mark roughly
 the top ~15-20% of ANY image's pixels as "of interest," even a completely
-static, non-contracting recording — it has no concept of "there is no ROI
-here." This module keeps that behavior for now so we can first validate a
-faithful port against MUSCLEMOTION's own demo dataset. The planned
-improvements (Otsu/bimodality thresholding, connected-component filtering,
-requiring temporal persistence rather than a single running max) are the
-direct fixes to "bucket A" from the false-positive discussion, and will
-live in this same file as additional, swappable functions later — nothing
-in signals.py or elsewhere should need to change when we do that.
+static, non-contracting recording.
 """
 
 from __future__ import annotations
@@ -35,8 +28,8 @@ from typing import Optional
 
 import numpy as np
 
-from .config import MuscleMotionConfig
-from .utils import maybe_blur
+from config import MuscleMotionConfig
+from utils import maybe_blur
 
 
 @dataclass
@@ -70,11 +63,10 @@ def compute_snr_mask(
     """
     Build the binary ROI mask from the (reference-frame-removed) stack.
 
-    Parameters
-    ----------
-    stack_no_ref : (n_frames, H, W) array — the working stack, reference
+    Parameters:
+    stack_no_ref : (n_frames, H, W) array, the working stack, reference
         frame already excluded (see reference_frame.remove_reference_frame).
-    reference_frame : (H, W) array — the chosen reference frame (already
+    reference_frame : (H, W) array, the chosen reference frame (already
         blurred if cfg.gaussian_blur was on when it was selected).
     cfg : MuscleMotionConfig
     """
@@ -112,9 +104,8 @@ def get_mask_or_none(
 ) -> Optional[np.ndarray]:
     """
     Convenience entry point for the pipeline orchestrator: returns the
-    boolean mask if cfg.max_project is enabled, else None (meaning
-    "don't restrict — average over the whole frame," matching the macro's
-    behavior when noise-reduction is turned off).
+    boolean mask if cfg.max_project is enabled, else None (average over the whole frame,"
+    matching the macro's behavior when noise-reduction is turned off).
     """
     if not cfg.max_project:
         return None

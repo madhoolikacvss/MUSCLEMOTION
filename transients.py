@@ -1,58 +1,46 @@
 """
-transients.py — Step 6 of the pipeline: for each detected peak, find where
+transients.py, Step 6 of the pipeline: for each detected peak, find where
 the Contraction signal crosses each requested percentage level on the way
 up and back down, then assemble the final per-beat metrics (time-to-peak,
 relaxation time, transient duration, per-percentage durations, peak-to-peak
-time, amplitudes) — this produces the row-per-beat table that becomes
+time, amplitudes). This produces the row-per-beat table that becomes
 Overview-results.txt/csv.
 
-Search window per peak
------------------------
+Search window per peak:
+
 Each peak searches within a window sized to the distance to its
 NEIGHBORING peak (next peak if one exists, otherwise the distance to the
-PREVIOUS peak — there's no "next" peak to measure to for the last beat,
-so falling back to the previous gap is the only sensible choice, and
-turns out to be exactly what the macro effectively does across
-iterations, coincidentally-but-correctly). For a recording with only ONE
-real peak, there is no neighbor at all to size a window from; the macro's
-literal behavior here involves arithmetic against its `false`-valued
-placeholder padding entry (see peaks.py's zero/one-peak padding
-handling) and produces an essentially meaningless window size. Rather
-than faithfully reproduce that specific degenerate case, this module
-falls back to searching (almost) the entire signal when there's only one
-peak — documented here as a deliberate, honest choice rather than a
-silent bug.
+PREVIOUS peak). For a recording with only ONE real peak, there is no neighbor 
+at all to size a window from; the macro's behavior here involves arithmetic 
+against its `false`-valued placeholder padding entry 
+(see peaks.py's zero/one-peak padding handling) and produces an essentially 
+meaningless window size. Rather than faithfully reproduce that specific case, 
+this module falls back to searching the entire signal when there's only one
+peak.
 
-Percentages: which one "counts"
----------------------------------
+Percentages: which one "counts":
+
 Only the crossings for `cfg.percentages[0]` (typically 10%) determine
 Time-to-peak, Relaxation Time, and overall Transient/Contraction
-Duration — this is inherent to how the macro works, not a bug, but it
-means changing the order of `percentages` changes what these headline
-metrics mean. Documented in config.py as well.
+Duration. the crossings for the other percentages are only used to fill the
+per-percentage duration columns (e.g. "90-to-90 transient (ms)").
 
-A quirk in the macro that looks worse on paper than it is in practice:
-`legacy_stale_percentage_crossing_bug`
-------------------------------------------------------------------------
+`legacy_stale_percentage_crossing_bug`:
+
 For the OTHER percentage levels (used only for the per-percentage
 duration columns, e.g. "90-to-90 transient (ms)"), the macro reuses the
 same small arrays across ALL peaks without resetting them between beats.
-Read literally, this looks like it could let a "not found this peak"
-percentage silently reuse a stale index left over from a PREVIOUS peak.
+It could let a "not found this peak" percentage silently reuse a stale 
+index left over from a previous peak.
 
-However — given `percentages` must be ascending (enforced in config.py)
+However, given `percentages` must be ascending (enforced in config.py)
 and the down/up search window is identical for every percentage of the
 SAME peak, this turns out to be UNREACHABLE in practice: if the primary
 (smallest, strictest) percentage's crossing is found, every larger
-(looser) percentage's crossing is mathematically guaranteed to also be
-found within that same window — a point satisfying the stricter
+(looser) percentage's crossing is guaranteed to also be
+found within that same window, a point satisfying the stricter
 threshold automatically satisfies every looser one too, so the scan for
 any larger percentage cannot fail once the primary one has succeeded.
-`legacy_stale_percentage_crossing_bug=True` reproduces the macro's literal
-array-reuse structure anyway (for code-structure parity), but it should
-always produce IDENTICAL output to the corrected default — see
-test_transients.py's equivalence test, which verifies exactly that rather
-than asserting a divergence that can't actually occur.
 """
 
 from __future__ import annotations
@@ -62,7 +50,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .config import MuscleMotionConfig
+from config import MuscleMotionConfig
 
 
 def _real_peaks(peaks: List[Optional[int]]) -> List[int]:
@@ -76,7 +64,7 @@ class BeatMetrics:
     relaxation_time_ms: Optional[float]
     transient_duration_ms: Optional[float]   # macro's "Contraction duration [X% above baseline] (ms)"
     percentage_durations_ms: Dict[int, float]  # one entry per cfg.percentages value
-    peak_to_peak_time_ms: Optional[float]       # None for the first beat
+    peak_to_peak_time_ms: float
     baseline_value: float
     peak_amplitude: float
     contraction_amplitude: float
@@ -110,8 +98,8 @@ def _find_crossings_for_peak(
     percentages: List[int],
 ) -> tuple[Dict[int, Optional[int]], Dict[int, Optional[int]]]:
     """
-    For one peak, find the down-flank (rising, before the peak) and
-    up-flank (falling, after the peak) crossing index for every requested
+    For one peak, find the rising, before the peak and
+    falling, after the peak crossing index for every requested
     percentage level. Requires 3 consecutive points below the level to
     reject single-frame noise dips as a false crossing.
     """
@@ -214,6 +202,8 @@ def analyze_transients(
         peak_to_peak_time = None
         if c > 0:
             peak_to_peak_time = (peak - real[c - 1]) * cfg.sampling_time_ms
+        else:
+            peak_to_peak_time = 0.0
 
         beats.append(BeatMetrics(
             peak_index=peak,
@@ -227,7 +217,7 @@ def analyze_transients(
             contraction_amplitude=float(y[peak]) - baseline,
         ))
 
-    ppt_values = [b.peak_to_peak_time_ms for b in beats if b.peak_to_peak_time_ms is not None]
+    ppt_values = [b.peak_to_peak_time_ms for b in beats if b.peak_to_peak_time_ms > 0]
     bpm = 60000.0 / np.mean(ppt_values) if ppt_values else None
 
     return TransientAnalysisResult(beats=beats, n_peaks=len(beats), bpm_estimate=bpm)
@@ -241,16 +231,22 @@ def beats_to_records(result: TransientAnalysisResult, cfg: MuscleMotionConfig) -
     """
     records = []
     for b in result.beats:
+        # Build percentage duration columns in the order: 90, 50, 10
+        # The macro orders them as: 90-90, 50-50, 10-10 (descending percentages)
+        percentage_durations = {}
+        for p in sorted(cfg.percentages, reverse=True):
+            # Use the exact naming: "90-90 Transient (ms)", "50-50 Transient (ms)", "10-10 Transient (ms)"
+            percentage_durations[f"{100 - p}-{100 - p} Transient (ms)"] = b.percentage_durations_ms.get(p, 0.0)
+        
         record = {
-            "Contraction duration [10% above baseline] (ms)": b.transient_duration_ms,
-            "Time-to-peak (ms)": b.time_to_peak_ms,
-            "Relaxation Time (ms)": b.relaxation_time_ms,
-            "Peak-to-peak time (ms)": b.peak_to_peak_time_ms,
-            "Baseline value (a.u.)": b.baseline_value,
-            "Peak amplitude (a.u.)": b.peak_amplitude,
-            "Contraction amplitude (a.u.)": b.contraction_amplitude,
+            "Contraction Duration [10% baseline] (ms)": round(b.transient_duration_ms, 3) if b.transient_duration_ms is not None else 0.0,
+            "Time to Peak (ms)": round(b.time_to_peak_ms, 3) if b.time_to_peak_ms is not None else 0.0,
+            "Relaxation Time (ms)": round(b.relaxation_time_ms, 3) if b.relaxation_time_ms is not None else 0.0,
+            **percentage_durations,
+            "Baseline Value (a.u.)": round(b.baseline_value, 3),
+            "Peak Amplitude (a.u.)": round(b.peak_amplitude, 3),
+            "Contraction Amplitude (a.u.)": round(b.contraction_amplitude, 3),
+            "Peak to Peak Interval (ms)": round(b.peak_to_peak_time_ms, 3) if b.peak_to_peak_time_ms is not None else 0.0,
         }
-        for p in cfg.percentages:
-            record[f"{100 - p}-to-{100 - p} transient (ms)"] = b.percentage_durations_ms[p]
         records.append(record)
     return records

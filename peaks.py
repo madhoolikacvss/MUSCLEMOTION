@@ -1,39 +1,28 @@
 """
-peaks.py — Step 4 of the pipeline: find beat/contraction peaks in the
+peaks.py, Step 4 of the pipeline: find beat/contraction peaks in the
 Contraction signal.
 
-Two detectors are provided behind one interface, exactly the pattern used
-in earlier stages (masking.py's Otsu-later plan, signals.py's
-restrict_mean_to_mask flag):
+Two detectors are provided behind one interface
 
-    detect_peaks_legacy  — a faithful port of the macro's hand-rolled
+    detect_peaks_legacy: a faithful port of the macro's hand-rolled
                             windowed-local-max detector, INCLUDING two
-                            real quirks in the original code (see below).
-    detect_peaks_scipy   — a much more robust alternative built on
+                            bugs in the original code (see below).
+    detect_peaks_scipy: a much more robust alternative built on
                             scipy.signal.find_peaks, recommended once
                             you're past validating a literal port.
 
-Two documented quirks in the original macro (both reproduced faithfully
-by default so we can validate against MUSCLEMOTION's own output first;
-both are directly relevant to the false-positive investigation)
-------------------------------------------------------------------------
 1. INDEX-OFFSET BUG in the crude baseline estimate (`perc0`):
    The macro computes `perc0 = yValues[referenceFrameSlice]`, but
    `referenceFrameSlice` is a frame number from the ORIGINAL stack
    (before the reference frame was deleted), while `yValues` (the
    Contraction signal) is one frame SHORTER because that frame was
-   removed. This silently reads the wrong sample as the baseline
-   estimate — usually off by only one frame's worth of index drift, but
-   it's real. `legacy_index_bug=True` reproduces this; the default
-   (`False`) instead uses a robust median-based estimate that doesn't
-   depend on trying to re-locate a frame that no longer exists in the
-   array.
+   removed. 
 
-2. ZERO-PEAK PADDING BUG — likely relevant to your false-positive symptom:
+2. ZERO-PEAK PADDING BUG:
    The macro initializes its peak list as the SCALAR `0` (not an empty
    array). If zero real peaks are found, its "pad if fewer than 2 peaks"
    safeguard (`Array.concat(maxList, false)`) concatenates onto that
-   stray scalar `0` — producing a fake peak at index 0 even though NO
+   stray scalar `0`, producing a fake peak at index 0 even though NO
    real peak was ever detected. A genuinely flat, non-contracting
    recording can therefore still emit one bogus "peak" purely from this
    padding logic, independent of any threshold or masking issue.
@@ -51,8 +40,8 @@ from typing import List, Optional
 import numpy as np
 from scipy.signal import find_peaks
 
-from .config import MuscleMotionConfig
-from .utils import robust_baseline_value
+from config import MuscleMotionConfig
+from utils import robust_baseline_value
 
 
 @dataclass
@@ -80,7 +69,7 @@ def _real_peaks(peaks: List[Optional[int]]) -> List[int]:
 
 def local_spacing(peaks: List[Optional[int]], idx: int) -> int:
     """
-    Distance (in frames) to the neighboring peak: the NEXT peak's distance
+    Distance(in frames) to the neighboring peak: the NEXT peak's distance
     if one exists, otherwise the distance from the PREVIOUS peak (matches
     the macro's rangeSpeedMax / peak-spacing logic, reused later by
     baseline.py). Assumes peaks[idx] is a real (non-None) peak.
@@ -171,9 +160,9 @@ def detect_peaks_scipy(
     legacy_index_bug: bool = False,
 ) -> PeakDetectionResult:
     """
-    Recommended alternative: scipy.signal.find_peaks with an amplitude
+    Alternative: scipy.signal.find_peaks with an amplitude
     floor (height) derived the same way as the legacy threshold, and a
-    minimum spacing (distance) derived from PeakDetectionWindow — same
+    minimum spacing (distance) derived from PeakDetectionWindow, same
     conceptual inputs, much more robust non-max-suppression than the
     hand-rolled window check in detect_peaks_legacy.
     """

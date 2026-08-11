@@ -1,5 +1,5 @@
 """
-io_utils.py — get any of MUSCLEMOTION's supported input types into a single
+io_utils.py, get any of MUSCLEMOTION's supported input types into a single
 numpy array of shape (n_frames, H, W), dtype float32 (grayscale).
 
 Supported, matching UserManual section 3 ("Input files"):
@@ -19,26 +19,46 @@ import cv2
 
 
 def _to_gray_f32(frame: np.ndarray) -> np.ndarray:
-    """Collapse an (H, W, 3) BGR/RGB frame to grayscale float32; pass 2D frames through."""
     if frame.ndim == 3:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return frame.astype(np.float32)
-
-
-def load_tiff_stack(path: str) -> np.ndarray:
-    """Load a multi-page TIFF stack directly into a (n_frames, H, W) float32 array."""
-    stack = tifffile.imread(path)
-    if stack.ndim == 2:
-        # a single-frame "stack" — treat as one frame so downstream code doesn't special-case it
-        stack = stack[np.newaxis, ...]
-    if stack.ndim == 4:
-        # (n_frames, H, W, C) — collapse channel dim
-        stack = np.stack([_to_gray_f32(f) for f in stack], axis=0)
-    return stack.astype(np.float32)
+    
+    # Ensure values are in 0-255 range
+    frame = frame.astype(np.float32)
+    if frame.max() <= 1.0:
+        frame = frame * 255.0
+    return frame
 
 
 def load_avi(path: str) -> np.ndarray:
-    """Load every frame of an (uncompressed, per the manual) AVI into a (n_frames, H, W) array."""
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise IOError(f"Could not open AVI file: {path}")
+
+    frames = []
+    frame_count = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frame_count += 1
+        
+        # # ========== DEBUG: Print raw frame info ==========
+        # if frame_count <= 3:
+        #     print(f"DEBUG: Raw frame {frame_count} - dtype={frame.dtype}, min={frame.min()}, max={frame.max()}")
+        
+        frames.append(_to_gray_f32(frame))
+    cap.release()
+
+    if not frames:
+        raise IOError(f"No frames read from AVI file: {path}")
+    stack = np.stack(frames, axis=0)
+    
+    # # ========== DEBUG: Print stack info ==========
+    # print(f"DEBUG: Stack - dtype={stack.dtype}, min={stack.min()}, max={stack.max()}")
+    
+    return stack
+
+def load_avi(path: str) -> np.ndarray:
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         raise IOError(f"Could not open AVI file: {path}")
@@ -53,8 +73,8 @@ def load_avi(path: str) -> np.ndarray:
 
     if not frames:
         raise IOError(f"No frames read from AVI file: {path}")
-    return np.stack(frames, axis=0)
-
+    stack = np.stack(frames, axis=0)
+    return stack
 
 def load_image_sequence(folder: str, pattern: str = "*") -> np.ndarray:
     """
@@ -73,8 +93,7 @@ def load_image_sequence(folder: str, pattern: str = "*") -> np.ndarray:
 def load_stack(path: str) -> np.ndarray:
     """
     Dispatch on file type / whether `path` is a directory, and return a
-    (n_frames, H, W) float32 grayscale stack — the single entry point every
-    other module and the pipeline orchestrator should call.
+    (n_frames, H, W) float32 grayscale stack
     """
     if os.path.isdir(path):
         return load_image_sequence(path)

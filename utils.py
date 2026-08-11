@@ -1,8 +1,7 @@
 """
-utils.py — small, stage-agnostic helpers shared by multiple modules.
+utils.py: helpers shared by multiple modules.
 
-Nothing algorithm-specific lives here (no reference-frame logic, no peak
-logic, etc.) — just building blocks that several stages happen to need:
+Building blocks that several stages happen to need:
 blurring, and a couple of robust statistics helpers used later once we
 get to the false-positive-reduction work.
 """
@@ -26,8 +25,7 @@ def blur_frame(frame: np.ndarray, sigma: float = GAUSSIAN_BLUR_SIGMA) -> np.ndar
 
 def blur_stack(stack: np.ndarray, sigma: float = GAUSSIAN_BLUR_SIGMA) -> np.ndarray:
     """
-    Apply the same blur to every frame of a 3D stack (n_frames, H, W) at once,
-    vectorized instead of looping frame-by-frame like the macro does.
+    Apply the same blur to every frame of a 3D stack (n_frames, H, W) at once
     sigma=0 on the frame axis so frames are blurred independently, not into
     each other.
     """
@@ -43,7 +41,6 @@ def maybe_blur(x: np.ndarray, enabled: bool) -> np.ndarray:
 
 def mean_abs_diff(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None) -> float:
     """
-    The one primitive nearly every MUSCLEMOTION stage is built from:
     mean(|a - b|), optionally restricted to a boolean mask (True = keep).
     Works for a single frame pair.
     """
@@ -57,6 +54,5 @@ def robust_baseline_value(values: np.ndarray) -> float:
     """
     Median-based stand-in for '(perc0 = a single frame's value)' in the original
     macro. Not used yet in the literal port (kept faithful there), but available
-    for the more robust variants we build later.
     """
     return float(np.median(values))

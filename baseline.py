@@ -1,47 +1,42 @@
 """
-baseline.py — Step 5 of the pipeline: for each detected peak, estimate the
+baseline.py, Step 5 of the pipeline: for each detected peak, estimate the
 local "resting level" (baseline) it rose from, so later stages can compute
 a meaningful amplitude (peak - baseline) rather than an absolute value that
 drifts with the recording.
 
 Two modes, matching cfg.high_freq_baseline_detection:
 
-    Mode A ("Yes"/True)  — baseline_highfreq: just the MINIMUM signal value
+    Mode A ("Yes"/True) baseline_highfreq: just the MINIMUM signal value
         in a window right before the peak. Simple, robust when beats are
         closely spaced (little true rest between them).
-    Mode B ("No"/False)   — baseline_standard: search for a cluster of
+    Mode B ("No"/False) baseline_standard: search for a cluster of
         genuinely FLAT points in that window (below a per-peak noise
         threshold, itself scaled by that peak's own fastest upstroke),
         then average the LAST `baseline_number_of_points` of them
         (closest in time to the peak).
 
 Both modes rely on `compute_speed_max_per_peak`, which measures each
-peak's own fastest local upstroke — used only to scale Mode B's flatness
+peak's own fastest local upstroke, used only to scale Mode B's flatness
 threshold.
 
 Three documented quirks in the original macro (each behind its own flag,
 default = corrected; set True for byte-for-byte validation against
-MUSCLEMOTION's own output)
------------------------------------------------------------------------
+MUSCLEMOTION's own output):
+
 1. `legacy_first_peak_bug` (Mode A only): the macro has a dead-code branch
-   (there is literally commented-out code sitting in it, suggesting an
-   incomplete edit) that SKIPS the baseline search entirely for the very
+   that SKIPS the baseline search entirely for the very
    FIRST peak, leaving its baseline equal to its own peak value. In Mode
    A, this means the first beat's reported contraction amplitude is
-   always exactly 0 — a real data-quality bug affecting every recording's
-   first beat, independent of any thresholding/masking issue.
+   always exactly 0.
 
 2. `legacy_mutating_baseline_n_bug` (Mode B only): when a peak doesn't
-   have enough flat points, the macro permanently REASSIGNS the shared
-   `baselineNumberOfPoints` setting to whatever smaller count it found —
-   silently changing behavior for every SUBSEQUENT peak in the same
+   have enough flat points, the macro permanently reassigns the shared
+   `baselineNumberOfPoints` setting to whatever smaller count it found,
+   changing behavior for every SUBSEQUENT peak in the same
    recording, not just the current one.
 
 3. `legacy_zero_baseline_bug` (Mode B only): if a peak has 0 or 1 flat
-   points, the macro's baseline for that peak becomes exactly 0 (and if
-   the mutating-N bug above has also driven the point-count to 0, this
-   can become an outright division-by-zero in the original macro).
-   Neither is a meaningful "resting level" for that beat; the corrected
+   points, the macro's baseline for that peak becomes exactly 0; the corrected
    default instead falls back to the minimum value in the search window.
 """
 
@@ -52,8 +47,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .config import MuscleMotionConfig
-from .peaks import local_spacing
+from config import MuscleMotionConfig
+from peaks import local_spacing
 
 
 def _real_peaks(peaks: List[Optional[int]]) -> List[int]:
@@ -83,13 +78,14 @@ def compute_speed_max_per_peak(y_values: np.ndarray, peaks: List[Optional[int]])
 
     for j, peak in enumerate(real):
         spacing = local_spacing(peaks, j)
-        window = round(spacing / 4)
+        window = int(spacing / 4 + 0.5) 
+        # window = round(spacing / 4)
         start = peak - window
         end = peak + window
         if start > 0 and end < n and end - 1 > start:
             jumps = y[start + 1:end] - y[start:end - 1]
             speed_max[j] = float(max(0.0, jumps.max())) if len(jumps) else 0.0
-        # else: leave at 0.0 — matches the macro's default-array-value behavior
+        # else: leave at 0.0, matches the macro's default-array-value behavior
         # when the window would run off either end of the signal.
 
     return speed_max

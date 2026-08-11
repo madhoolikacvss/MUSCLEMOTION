@@ -1,32 +1,25 @@
 """
-reference_frame.py — Step 1 of the pipeline: choose the single frame that
+reference_frame.py: Step 1 of the pipeline: choose the single frame that
 every other frame will be diffed against for the Contraction signal.
 
 Three modes (mirrors UserManual section 6, option G):
 
-    "manual"       — caller supplies an explicit frame index.
-    "first_frame"  — trivial fallback, frame 0.
-    "autodetect"   — find a frame that is both QUIET (low overall motion)
+    "manual"       : user gives an explicit frame index.
+    "first_frame"  : frame 0.
+    "autodetect"   : find a frame that is both QUIET (low overall motion)
                      and STABLE (motion isn't actively changing, i.e. not
-                     mid-transition into/out of a beat). This is the
-                     "hunt for a diastolic frame" heuristic described in
-                     the algorithm walkthrough.
+                     mid-transition into/out of a beat)
 
-Design note on a known macro quirk
------------------------------------
+NB:
 In the original ImageJ macro, `autoDetectStart`/`autoDetectStop` are used
-to slice the *already-computed* motion-scan array, but the scan itself
+to slice the already-computed motion-scan array, but the scan itself
 always starts at frame 1 regardless of `autoDetectStart`. The winning
 index found in that sliced sub-array is then used directly as a 1-based
-frame number, WITHOUT adding `autoDetectStart` back as an offset. With
-the default `autoDetectStart = 1` this is harmless, but for any other
-value it silently searches the wrong part of the video.
+frame number, WITHOUT adding `autoDetectStart` back as an offset. 
 
 This module fixes that by default (`legacy_offset_bug=False`): the scan
 window is honored as written (starts at `auto_detect_start`), and the
 returned index is correctly offset back into full-stack coordinates.
-Pass `legacy_offset_bug=True` if you need byte-for-byte parity with the
-original macro's output for validation against the demo dataset.
 """
 
 from __future__ import annotations
@@ -35,8 +28,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .config import MuscleMotionConfig
-from .utils import maybe_blur, mean_abs_diff
+from config import MuscleMotionConfig
+from utils import maybe_blur, mean_abs_diff
 
 
 @dataclass
@@ -48,11 +41,7 @@ class ReferenceFrameResult:
 
 
 def _clamp_autodetect_params(n_frames: int, cfg: MuscleMotionConfig) -> tuple[int, int, int, int]:
-    """
-    Reproduce the macro's bounds-checking exactly (see macro comments:
-    'WARNING: autoDetectStart set to ... since it should be smaller than
-    autoDetectStop', etc.), operating on 0-based indices internally.
-    """
+    
     start = cfg.auto_detect_start - 1          # convert to 0-based
     stop = cfg.auto_detect_stop - 1
     low_n = cfg.low_value_n
@@ -66,7 +55,7 @@ def _clamp_autodetect_params(n_frames: int, cfg: MuscleMotionConfig) -> tuple[in
     if low_n >= stop:
         low_n = stop - 1
     if low_n <= unity_n:
-        unity_n = low_n - 1
+        unity_n = low_n
 
     return start, stop, low_n, unity_n
 
@@ -77,20 +66,18 @@ def autodetect_reference_frame(
     legacy_offset_bug: bool = False,
 ) -> ReferenceFrameResult:
     """
-    Implements the "quiet + stable" heuristic:
-
       1. Coarse motion scan: speedY[k] = mean(|stack[k] - stack[k+speed_window]|)
       2. Pair each value with its immediate next neighbor.
       3. Score by overall motion magnitude (radian = sqrt(a^2 + b^2)); keep the
          `low_value_n` quietest candidates.
       4. Among those, score by how close the ratio a/b is to 1 ("unity line");
          keep the `unity_selection_n` flattest candidates.
-      5. Pick the candidate minimizing (a * b * unity_score) — quiet AND flat wins.
+      5. Pick the candidate minimizing (a * b * unity_score)
     """
     n_frames = stack.shape[0]
     sw = cfg.speed_window
 
-    # --- Step 1: coarse motion scan across the (blurred, if enabled) whole stack ---
+    #  Step 1: coarse motion scan across the (blurred, if enabled) whole stack 
     a_full = maybe_blur(stack[: n_frames - sw], cfg.gaussian_blur)
     b_full = maybe_blur(stack[sw:], cfg.gaussian_blur)
     speed_y_full = np.abs(a_full - b_full).mean(axis=(1, 2))  # length n_frames - sw
@@ -98,37 +85,38 @@ def autodetect_reference_frame(
     start, stop, low_n, unity_n = _clamp_autodetect_params(n_frames, cfg)
 
     if legacy_offset_bug:
-        # Faithful reproduction: slice the array but forget to re-offset the winning index.
         window = speed_y_full[start:stop]
         offset_correction = 0
     else:
-        # Corrected: the search window genuinely starts at `start`, and we track that.
-        window = speed_y_full[start:stop]
-        offset_correction = start
+        window = speed_y_full[start + 1:stop + 1]
+        offset_correction = start + 1
 
-    # --- Step 2: pair each value with its immediate next neighbor ---
+    #  Step 2: pair each value with its immediate next neighbor 
     speed_y = window[:-1]
     speed_y_shift = window[1:]
 
     if len(speed_y) < max(low_n, unity_n, 2):
         raise ValueError(
             "Not enough frames in the autodetect search window for the requested "
-            "low_value_n / unity_selection_n — check auto_detect_start/stop and speed_window."
+            "low_value_n / unity_selection_n: check auto_detect_start/stop and speed_window."
         )
 
-    # --- Step 3: quiet filter (smallest overall motion magnitude) ---
+    #  Step 3: quiet filter (smallest overall motion magnitude) 
     radian = np.sqrt(speed_y**2 + speed_y_shift**2)
     quiet_candidates = np.argsort(radian)[:low_n]
 
-    # --- Step 4: flatness filter (ratio closest to 1, i.e. near the "unity line") ---
+    #  Step 4: flatness filter (ratio closest to 1, i.e. near the "unity line") 
+    # Calculate unity scores for ALL quiet candidates (no bug)
     with np.errstate(divide="ignore", invalid="ignore"):
-        unity_score = np.abs(speed_y[quiet_candidates] / speed_y_shift[quiet_candidates] - 1)
-    unity_score = np.nan_to_num(unity_score, nan=np.inf, posinf=np.inf)
-    flattest_order = np.argsort(unity_score)[:unity_n]
-    flattest_candidates = quiet_candidates[flattest_order]
-    flattest_unity_scores = unity_score[flattest_order]
+        unity_scores = np.abs(speed_y[quiet_candidates] / speed_y_shift[quiet_candidates] - 1)
+    unity_scores = np.nan_to_num(unity_scores, nan=np.inf, posinf=np.inf)
+    
+    # Sort by unity score and take the top unity_n candidates
+    unity_order = np.argsort(unity_scores)[:unity_n]
+    flattest_candidates = quiet_candidates[unity_order]
+    flattest_unity_scores = unity_scores[unity_order]
 
-    # --- Step 5: final combined score — quiet AND flat wins ---
+    #  Step 5: final combined score, quiet AND flat wins 
     combined_score = (
         speed_y[flattest_candidates] * speed_y_shift[flattest_candidates] * flattest_unity_scores
     )
@@ -154,9 +142,10 @@ def autodetect_reference_frame(
             "flattest_candidates": flattest_candidates,
             "combined_score": combined_score,
             "legacy_offset_bug": legacy_offset_bug,
+            "unity_scores": unity_scores,
+            "unity_order": unity_order,
         },
-    )
-
+    )   
 
 def manual_reference_frame(stack: np.ndarray, cfg: MuscleMotionConfig) -> ReferenceFrameResult:
     """User-specified reference frame index (0-based)."""
@@ -164,7 +153,8 @@ def manual_reference_frame(stack: np.ndarray, cfg: MuscleMotionConfig) -> Refere
     if idx is None or not (0 <= idx < stack.shape[0]):
         raise ValueError(f"manual_reference_frame_index out of range: {idx}")
     frame = maybe_blur(stack[idx], cfg.gaussian_blur)
-    return ReferenceFrameResult(index=idx, frame=frame, mode="manual", diagnostics={})
+    ref_frame = ReferenceFrameResult(index=idx, frame=frame, mode="manual", diagnostics={})
+    return ref_frame
 
 
 def first_frame_reference(stack: np.ndarray, cfg: MuscleMotionConfig) -> ReferenceFrameResult:
